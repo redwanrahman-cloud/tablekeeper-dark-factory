@@ -266,6 +266,31 @@ class Invariants(unittest.TestCase):
         self.assertEqual(self.call('GET', '/availability?restaurant_id=venue&date=9999-12-31&party_size=2', auth=False)[1]['slots'], [])
         self.assertEqual(self.call('POST', '/reservations', body, 'last-day')[1]['error']['code'], 'outside_opening_hours')
 
+    def test_timezone_offsets_at_extreme_calendar_dates(self):
+        for zone, day in [('America/New_York', '9999-12-31'), ('Europe/Berlin', '0001-01-01')]:
+            with self.subTest(zone=zone):
+                fixture = copy.deepcopy(self.fixture)
+                fixture['restaurants'][0]['timezone'] = zone
+                for hours in fixture['restaurants'][0]['opening_hours']:
+                    hours.update(opens='00:00', closes='04:00')
+                if zone == 'America/New_York':
+                    for hours in fixture['restaurants'][0]['opening_hours']:
+                        hours.update(opens='18:00', closes='23:00')
+                self.assertEqual(self.call('POST', '/_test/reset', fixture, auth=False)[0], 204)
+                self.token = self.call('POST', '/auth/login', {'email': 'owner@example.test', 'password': 'long-password'}, auth=False)[1]['token']
+                status, availability = self.call('GET', '/availability?restaurant_id=venue&date=' + day + '&party_size=2', auth=False)
+                self.assertEqual(status, 200)
+                self.assertTrue(availability['slots'])
+                body = {**self.booking(), 'starts_at_local': availability['slots'][0]['starts_at_local']}
+                status, record = self.call('POST', '/reservations', body, 'extreme-zone')
+                self.assertEqual(status, 201)
+                self.assertEqual(record['starts_at_local'], body['starts_at_local'])
+                snapshot = self.call('GET', '/_test/export', auth=False)[1]
+                self.assertEqual(self.call('POST', '/_test/import', snapshot, auth=False)[0], 204)
+                if zone == 'Europe/Berlin':
+                    status, error = self.call('POST', '/reservations/' + record['reference'] + '/cancel')
+                    self.assertEqual((status, error['error']['code']), (409, 'cutoff_passed'))
+
 
 if __name__ == '__main__':
     unittest.main()

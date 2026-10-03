@@ -86,12 +86,39 @@ def resolve(local, zone):
     candidates = []
     for fold in (0, 1):
         aware = local.replace(tzinfo=zone, fold=fold)
-        instant = aware.astimezone(UTC)
-        if instant.astimezone(zone).replace(tzinfo=None) == local:
+        try:
+            instant = aware.astimezone(UTC)
+            valid = instant.astimezone(zone).replace(tzinfo=None) == local
+        except OverflowError:
+            # A valid local boundary date can lie outside datetime's UTC range.
+            # Gregorian weekday/leap patterns repeat after 400 years; ZoneInfo's
+            # ancient fixed offsets and extrapolated future rules remain the same.
+            shifted = local.replace(year=local.year + (400 if local.year < 400 else -400))
+            probe = shifted.replace(tzinfo=zone, fold=fold)
+            valid = (probe.utcoffset() == aware.utcoffset() and
+                     probe.astimezone(UTC).astimezone(zone).replace(tzinfo=None) == shifted)
+            instant = aware
+        if valid:
             candidates.append(instant)
     if not candidates:
         fail(422, 'invalid_local_time')
-    return min(candidates)
+    return min(candidates, key=absolute_seconds)
+
+
+def absolute_seconds(instant):
+    # Arithmetic on naive ordinals does not need a representable UTC datetime.
+    return ((instant.replace(tzinfo=None) - datetime(1970, 1, 1)).total_seconds()
+            - instant.utcoffset().total_seconds())
+
+
+def duration_end(start, minutes, zone):
+    if start.tzinfo is UTC:
+        return start + timedelta(minutes=minutes)
+    local = start.astimezone(zone)
+    shift = 400 if local.year < 400 else -400
+    shifted = local.replace(year=local.year + shift)
+    end = (shifted.astimezone(UTC) + timedelta(minutes=minutes)).astimezone(zone)
+    return end.replace(year=end.year - shift)
 
 
 def stamp(instant, zone=UTC):
@@ -246,7 +273,7 @@ def proposal(state, body, restaurant_id=None):
     closes = datetime.combine(wall.date(), datetime.strptime(hours['closes'], '%H:%M').time())
     # Compare available absolute time before adding duration. This also handles
     # valid dates near datetime.max and durations too large for timedelta.
-    remaining_seconds = (resolve(closes, zone) - start).total_seconds()
+    remaining_seconds = absolute_seconds(resolve(closes, zone)) - absolute_seconds(start)
     if wall < opens or wall >= closes or r['reservation_duration_minutes'] * 60 > remaining_seconds:
         fail(422, 'outside_opening_hours')
     minutes = int((wall - opens).total_seconds() // 60)
@@ -254,7 +281,7 @@ def proposal(state, body, restaurant_id=None):
         fail(422, 'not_on_slot_grid')
     if size > table['capacity']:
         fail(422, 'party_exceeds_capacity')
-    end = start + timedelta(minutes=r['reservation_duration_minutes'])
+    end = duration_end(start, r['reservation_duration_minutes'], zone)
     return {'restaurant_id': rid, 'table_id': tid, 'party_size': size,
             'starts_at_local': wall.isoformat(timespec='minutes'),
             'starts_at': stamp(start, zone), 'ends_at': stamp(end, zone)}
@@ -288,7 +315,7 @@ def owned(state, ref, uid):
 
 def cutoff(state, record):
     minutes = restaurant(state, record['restaurant_id'])['cancellation_cutoff_minutes']
-    if datetime.now(UTC) >= datetime.fromisoformat(record['starts_at']) - timedelta(minutes=minutes):
+    if absolute_seconds(datetime.now(UTC)) >= absolute_seconds(datetime.fromisoformat(record['starts_at'])) - minutes * 60:
         fail(409, 'cutoff_passed')
 
 
@@ -459,9 +486,9 @@ def dispatch(method, path, query, body, headers):
             while wall < closes:
                 try:
                     start = resolve(wall, zone)
-                    remaining_seconds = (resolve(closes, zone) - start).total_seconds()
+                    remaining_seconds = absolute_seconds(resolve(closes, zone)) - absolute_seconds(start)
                     if r['reservation_duration_minutes'] * 60 <= remaining_seconds:
-                        end = start + timedelta(minutes=r['reservation_duration_minutes'])
+                        end = duration_end(start, r['reservation_duration_minutes'], zone)
                         slot = {'restaurant_id': rid, 'starts_at': stamp(start, zone), 'ends_at': stamp(end, zone)}
                         available = []
                         for table in r['tables']:
