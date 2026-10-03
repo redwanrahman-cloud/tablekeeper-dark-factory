@@ -174,6 +174,70 @@ async def main(base, out, previous):
                 await page.get_by_test_id('lookup-submit').click(); await page.get_by_test_id('reservation-detail').wait_for()
                 results.append('Exact accepted Stage 1 export preserves session/pending browser retry/lookup: PASS')
                 await context.close()
+        layout_results = []
+        async def audit_layout(page, case, state):
+            sizes = await page.evaluate('''() => ({viewport:innerWidth,
+              clientWidth:document.documentElement.clientWidth,
+              scrollWidth:document.documentElement.scrollWidth,
+              bodyScrollWidth:document.body.scrollWidth})''')
+            sizes.update(case=case,state=state)
+            layout_results.append(sizes)
+            (out/'long-label-layout.json').write_text(json.dumps(layout_results,indent=2)+'\n')
+            await page.screenshot(path=str(out/f'long-label-{case}-{state}.png'),full_page=True)
+            assert sizes['scrollWidth'] <= sizes['clientWidth'],sizes
+            assert sizes['bodyScrollWidth'] <= sizes['viewport'],sizes
+
+        long_fixture = copy.deepcopy(fixture)
+        long_restaurant = long_fixture['restaurants'][0]
+        long_restaurant['name'] = 'Restaurant'+'Hospitality'*9
+        long_restaurant['tables'][0]['label'] = 'Terrace'+'Seating'*14
+        long_restaurant['tables'][1]['label'] = 'Garden'+'Seating'*14
+        for width in (375,1440):
+            for pair in (False,True):
+                case = f'{width}-'+('pair' if pair else 'single')
+                assert (await client.post('/_test/reset',json=long_fixture)).status_code == 204
+                context = await browser.new_context(base_url=base,viewport={'width':width,'height':900})
+                page = await context.new_page()
+                await page.goto('/login')
+                await page.get_by_test_id('login-email').fill('diner@example.test')
+                await page.get_by_test_id('login-password').fill('browser-password')
+                await page.get_by_test_id('login-submit').click()
+                await page.get_by_test_id('current-user').wait_for()
+                await page.goto('/')
+                await page.get_by_test_id('restaurant-select').select_option('room')
+                await page.get_by_test_id('date-input').fill(day)
+                await page.get_by_test_id('party-size-input').fill('6' if pair else '2')
+                await page.get_by_test_id('search-button').click()
+                await page.get_by_test_id('availability-grid').wait_for()
+                assert long_restaurant['name'] in await page.locator('#results-heading').inner_text()
+                await audit_layout(page,case,'search')
+                await page.get_by_test_id('slot-'+('terrace+garden' if pair else 'terrace')+'-19:00').click()
+                labels = [long_restaurant['tables'][0]['label']]
+                if pair: labels.append(long_restaurant['tables'][1]['label'])
+                for label in labels:
+                    assert label in await page.get_by_test_id('booking-summary').inner_text()
+                await page.get_by_test_id('booking-party-size').focus()
+                assert await page.get_by_test_id('booking-party-size').evaluate('(e)=>e===document.activeElement')
+                await audit_layout(page,case,'booking')
+                await page.keyboard.press('Tab')
+                assert await page.get_by_test_id('booking-submit').evaluate('(e)=>e===document.activeElement')
+                await page.keyboard.press('Enter')
+                await page.get_by_test_id('confirmation').wait_for()
+                assert long_restaurant['name'] in await page.get_by_test_id('confirmation-details').inner_text()
+                for label in labels:
+                    assert label in await page.get_by_test_id('confirmation-tables').inner_text()
+                await audit_layout(page,case,'confirmation')
+                reference = await page.get_by_test_id('confirmation-reference').inner_text()
+                await page.goto('/lookup')
+                await page.get_by_test_id('lookup-reference-input').fill(reference)
+                await page.get_by_test_id('lookup-submit').click()
+                await page.get_by_test_id('reservation-detail').wait_for()
+                assert long_restaurant['name'] in await page.get_by_test_id('reservation-detail').inner_text()
+                for label in labels:
+                    assert label in await page.get_by_test_id('reservation-tables').inner_text()
+                await audit_layout(page,case,'lookup')
+                results.append(f'{case} long labels/search/form/confirmation/lookup/keyboard: PASS')
+                await context.close()
         await browser.close()
     print('\n'.join(results))
     (out/'browser-results.json').write_text(json.dumps(results,indent=2)+'\n')
