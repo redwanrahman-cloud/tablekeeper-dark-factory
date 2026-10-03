@@ -32,7 +32,7 @@ def obj(value):
     return value
 
 
-def string(body, key, required=True, maxlen=None):
+def string(body, key, required=True, maxlen=None, nonempty=False):
     if key not in body:
         if required:
             fail()
@@ -40,13 +40,13 @@ def string(body, key, required=True, maxlen=None):
     value = body[key]
     if not isinstance(value, str):
         fail(400, 'malformed_request')
-    if not value or (maxlen is not None and len(value) > maxlen):
+    if (nonempty and not value) or (maxlen is not None and len(value) > maxlen):
         fail()
     return value
 
 
 def ident(body, key):
-    return string(body, key, maxlen=64)
+    return string(body, key, maxlen=64, nonempty=True)
 
 
 def integer(body, key, minimum=1):
@@ -183,7 +183,7 @@ def json_text(value):
 
 def validate_restaurant(raw):
     obj(raw)
-    result = {k: string(raw, k, maxlen=64 if k == 'id' else None)
+    result = {k: string(raw, k, maxlen=64 if k == 'id' else None, nonempty=k == 'id')
               for k in ('id', 'name', 'timezone')}
     try:
         ZoneInfo(result['timezone'])

@@ -224,6 +224,27 @@ class Invariants(unittest.TestCase):
         self.assertEqual(self.call('POST', '/_test/import', exported, auth=False)[0], 204)
         self.assertEqual(self.call('POST', '/reservations', body, 'early-year'), (200, receipt))
 
+    def test_empty_login_password_follows_authentication_rules(self):
+        status, error = self.call('POST', '/auth/login', {'email': 'owner@example.test', 'password': ''}, auth=False)
+        self.assertEqual((status, error['error']['code']), (401, 'unauthenticated'))
+        self.assertEqual(self.call('POST', '/auth/signup', {'email': 'empty@example.test', 'password': '', 'display_name': ''}, auth=False)[0], 422)
+        # Signup's minimum is not a restriction on supplied seed passwords.
+        fixture = copy.deepcopy(self.fixture)
+        fixture['users'][0]['password'] = ''
+        self.assertEqual(self.call('POST', '/_test/reset', fixture, auth=False)[0], 204)
+        self.assertEqual(self.call('POST', '/auth/login', {'email': 'owner@example.test', 'password': ''}, auth=False)[0], 200)
+
+    def test_empty_display_name_survives_signup_login_and_import(self):
+        credentials = {'email': 'unnamed@example.test', 'password': 'long-password', 'display_name': ''}
+        status, signup = self.call('POST', '/auth/signup', credentials, auth=False)
+        self.assertEqual(status, 201)
+        self.assertEqual(signup['display_name'], '')
+        self.assertEqual(self.call('POST', '/auth/login', credentials, auth=False)[1]['display_name'], '')
+        snapshot = self.call('GET', '/_test/export', auth=False)[1]
+        self.assertEqual(self.call('POST', '/_test/reset', self.fixture, auth=False)[0], 204)
+        self.assertEqual(self.call('POST', '/_test/import', snapshot, auth=False)[0], 204)
+        self.assertEqual(self.call('POST', '/auth/login', credentials, auth=False)[1]['display_name'], '')
+
 
 if __name__ == '__main__':
     unittest.main()
