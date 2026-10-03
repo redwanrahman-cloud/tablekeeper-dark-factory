@@ -172,8 +172,67 @@ async def main(base, out, previous):
                 reference = await page.get_by_test_id('confirmation-reference').inner_text()
                 await page.goto('/lookup'); await page.get_by_test_id('lookup-reference-input').fill(reference)
                 await page.get_by_test_id('lookup-submit').click(); await page.get_by_test_id('reservation-detail').wait_for()
-                results.append('Exact accepted Stage 1 export preserves session/pending browser retry/lookup: PASS')
+                results.append('Actual preceding accepted service export preserves session/pending browser retry/lookup: PASS')
                 await context.close()
+        original_fixture = fixture
+        fixture = copy.deepcopy(original_fixture)
+        fixture['restaurants'][0]['manager_user_ids'] = ['diner']
+        fixture['restaurants'][0]['name'] = 'The Olive Room ' + 'Welcoming'*35
+        fixture['restaurants'][0]['tables'][0]['label'] = 'Terrace ' + 'Together'*25
+        for width in (1440,375):
+            context,page = await setup(width)
+            errors = []; page.on('pageerror',lambda error:errors.append(str(error)))
+            token = await page.evaluate('JSON.parse(localStorage.getItem("tablekeeper.session")).token')
+            headers = {'Authorization':'Bearer '+token,'Idempotency-Key':'dated-policy'}
+            policy = {'effective_from':day,'slot_minutes':30,'reservation_duration_minutes':60,
+                      'cancellation_cutoff_minutes':45,'opening_hours':restaurant['opening_hours'],
+                      'capacities':{'terrace':2,'garden':5,'window':6}}
+            assert (await client.post('/restaurants/room/policies',json=policy,headers=headers)).status_code == 201
+            await page.get_by_test_id('search-button').click()
+            await page.get_by_test_id('availability-grid').wait_for()
+            await page.get_by_test_id('availability-explanation').first.locator('summary').click()
+            assert 'Too few seats' in await page.get_by_test_id('availability-explanation').first.inner_text()
+            assert await page.evaluate('document.documentElement.scrollWidth <= innerWidth')
+            await page.screenshot(path=str(out/f'policy-explanation-{width}.png'),full_page=True)
+            await page.get_by_test_id('slot-terrace+garden-19:00').click()
+            assert '60 minutes' in await page.locator('.fine-print').inner_text()
+            await page.get_by_test_id('booking-submit').click(); await page.get_by_test_id('confirmation').wait_for()
+            assert '60 minutes' in await page.get_by_test_id('accepted-terms').inner_text()
+            reference = await page.get_by_test_id('confirmation-reference').inner_text()
+            await page.goto('/lookup'); await page.get_by_test_id('lookup-reference-input').fill(reference)
+            await page.get_by_test_id('lookup-submit').click(); await page.get_by_test_id('reservation-history').wait_for()
+            assert 'Reservation recorded' in await page.get_by_test_id('reservation-history').inner_text()
+            summary = page.locator('.agreement-tool').nth(1).locator('summary')
+            await summary.focus(); assert await summary.evaluate('(e)=>document.activeElement===e')
+            await summary.press('Enter')
+            await page.get_by_test_id('series-count').fill('3')
+            attempts = []; committed_series = None
+            async def lose_series(route):
+                nonlocal committed_series
+                attempts.append((route.request.headers['idempotency-key'],route.request.post_data))
+                if len(attempts) == 1:
+                    response = await route.fetch(); assert response.status == 201
+                    committed_series = await response.json(); await route.abort('failed')
+                else: await route.continue_()
+            await page.route('**/series',lose_series)
+            await page.get_by_test_id('series-submit').click(); await page.get_by_test_id('series-uncertain').wait_for()
+            assert await page.get_by_test_id('series-occurrences').count() == 0
+            await page.get_by_test_id('series-submit').click(); await page.get_by_test_id('series-occurrences').wait_for()
+            assert attempts[0] == attempts[1]
+            assert await page.get_by_test_id('series-uncertain').count() == 0
+            assert await page.get_by_test_id('series-occurrences').locator(':scope > li').count() == 3
+            await page.screenshot(path=str(out/f'terms-history-series-{width}.png'),full_page=True)
+            await page.locator('.agreement-tool').first.locator('summary').click()
+            await page.get_by_test_id('amend-party').fill('5')
+            await page.get_by_test_id('amend-submit').click()
+            await page.wait_for_function('document.querySelector(`[data-testid="reservation-history"]`)?.textContent.includes("Booking changed")')
+            agreement = (await client.get('/series/'+committed_series['series_id'],headers={'Authorization':'Bearer '+token})).json()
+            assert agreement['revision'] == 2 and agreement['occurrences'][0]['exception'] is True
+            assert await page.evaluate('document.documentElement.scrollWidth <= innerWidth')
+            await page.screenshot(path=str(out/f'changed-history-{width}.png'),full_page=True)
+            assert not errors,errors
+            results.append(f'{width}px dated terms/explanations/history/recurrence lost response/amendment/long labels/focus: PASS')
+            await context.close()
         await browser.close()
     print('\n'.join(results))
     (out/'browser-results.json').write_text(json.dumps(results,indent=2)+'\n')

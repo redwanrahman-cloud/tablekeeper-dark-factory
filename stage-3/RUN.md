@@ -13,7 +13,8 @@ State is in memory and is intentionally lost at restart. Export/import can trans
 a consistent snapshot, including sessions and retry receipts; treat exports as private.
 
 Open `http://localhost:8080/` to browse and book, `/signup` or `/login` to sign in,
-and `/lookup` to find or cancel a booking. The fresh process has no restaurants;
+and `/lookup` to find or cancel a booking, view accepted terms/history, change its
+date/seating/party size, or adopt it as recurring visits. The fresh process has no restaurants;
 reset fixtures provide the restaurant configuration. Browser HTML, CSS and JavaScript
 are included in the image and use no CDN or external requests. Browser sessions persist
 in this origin's local storage. An unchanged booking form retains its request body and
@@ -39,15 +40,16 @@ python -m unittest discover -s tests -v
 ```
 
 The optional browser regression script needs Playwright with Chromium and httpx in
-the testing environment, never in the application image. With running Stage 2 and
-Stage 1 containers:
+the testing environment, never in the application image. With running Stage 3 and
+the accepted Stage 2 containers:
 
 ```sh
 python tests/browser_checks.py --base-url http://localhost:8080 --previous-base-url http://localhost:8081 --out /tmp/tablekeeper-browser-checks
 ```
 
 It checks desktop/375px combined booking, replay, lookup/cancel, out-of-order search,
-lost-response retry, stale availability and a populated Stage 1 migration. Screenshots
+lost-response retry, stale availability, a populated preceding-stage migration,
+policy terms, explanations, history, recurring recovery, amendments and long labels. Screenshots
 and a summary go to the specified output directory. No credentials or exports are written.
 
 Every state operation runs under one process-wide lock. Validation constructs new

@@ -54,15 +54,32 @@ function searchScreen() {
 }
 function dateLabel(day) { const [y,m,d] = day.split('-').map(Number); const value = new Date(0); value.setFullYear(y,m-1,d); value.setHours(12,0,0,0); return value.toLocaleDateString(undefined,{weekday:'short',month:'short',day:'numeric',year:'numeric'}); }
 function seatingLabel(restaurant, tids) { return tids.map(id => restaurant.tables.find(t => t.id === id)?.label ?? id).join(' + '); }
+function explanationMarkup(choice,slots,r) {
+  // The explanation API reports each single table's independent rules.
+  // A pair can fit even when neither member individually fits the party.
+  if (choice.ids.length > 1) return '';
+  const unavailable = slots.map(slot => {
+    const reasons = (slot.explain || []).filter(e=>choice.ids.includes(e.table_id)).flatMap(e=>e.rules.filter(rule=>!rule.holds).map(rule=>(rule.rule === 'capacity' ? 'Too few seats for this party' : 'Already reserved')+' · '+seatingLabel(r,[e.table_id])));
+    return reasons.length ? `<li><strong>${esc(slot.starts_at_local.slice(11))}</strong>: ${esc([...new Set(reasons)].join('; '))}</li>` : '';
+  }).filter(Boolean);
+  return unavailable.length ? `<details class="availability-explanation" ${test('availability-explanation')}><summary>Why some times are unavailable</summary><ul>${unavailable.join('')}</ul></details>` : '';
+}
+function termsMarkup(terms, name='accepted-terms') {
+  if (!terms) return '';
+  return `<div class="terms-note" ${test(name)}><strong>Your booking terms</strong><p>${esc(terms.reservation_duration_minutes)} minutes at your table. Changes and cancellations close ${esc(terms.cancellation_cutoff_minutes)} minutes before the start.</p><span class="muted">${terms.policy_version ? 'Published policy '+esc(terms.policy_version) : 'Original restaurant policy'} · Accepted for this reservation</span></div>`;
+}
 async function runSearch(query, preserveBooking = false) {
   const version = ++searchVersion;
   feedback('search-feedback','search-error','');
   if (!preserveBooking) { booking = null; currentSearch = null; $('result-section').innerHTML = '<div class="loading" role="status">Finding a place for your evening…</div>'; }
   try {
-    const params = new URLSearchParams({restaurant_id:query.rid,date:query.date,party_size:query.party});
-    const [restaurant, availability] = await Promise.all([api('/restaurants/'+encodeURIComponent(query.rid)),api('/availability?'+params)]);
+    const params = new URLSearchParams({restaurant_id:query.rid,date:query.date,party_size:query.party,explain:'true'});
+    const base = '/restaurants/'+encodeURIComponent(query.rid);
+    const [restaurant, availability, publications] = await Promise.all([api(base),api('/availability?'+params),api(base+'/policies').catch(error => { if (error.status === 404) return {policies:[]}; throw error; })]);
     if (version !== searchVersion) return;
-    currentSearch = {query,restaurant,availability,version}; renderResults(preserveBooking);
+    const applicable = publications.policies.filter(p => p.effective_from <= query.date).sort((a,b) => a.effective_from.localeCompare(b.effective_from) || a.policy_version-b.policy_version);
+    const terms = applicable.at(-1) || {...restaurant,policy_version:0,capacities:Object.fromEntries(restaurant.tables.map(t=>[t.id,t.capacity]))};
+    currentSearch = {query,restaurant,availability,terms,version}; renderResults(preserveBooking);
   } catch (error) {
     if (version !== searchVersion) return;
     feedback('search-feedback','search-error',friendly(error));
@@ -74,18 +91,18 @@ function renderResults(preserveBooking) {
   if (!preserveBooking) $('result-section').innerHTML = '<div id="results-heading"></div><div class="results-layout"><div id="grid-area"></div><aside id="booking" aria-label="Your selected table"></aside></div>';
   $('results-heading').innerHTML = `<div class="section-top"><div><p class="eyebrow">A table for your plans</p><h2>${esc(r.name || 'Restaurant')}</h2><p class="muted">${esc(dateLabel(query.date))} · ${esc(query.party)} guests · Times in ${esc(r.timezone.replaceAll('_',' '))}</p></div><div class="legend"><span><i></i>Available</span><span><i class="taken"></i>Unavailable</span></div></div>`;
   if (!availability.slots.length) { $('grid-area').innerHTML = `<div class="state-card" ${test('no-slots')}><h3>A quiet day at ${esc(r.name || 'this restaurant')}.</h3><p class="muted">There are no booking times on this date. Try another day.</p></div>`; return; }
-  const choices = r.tables.map(t => ({ids:[t.id],capacity:t.capacity}));
-  for (const pair of r.combinable || []) if (availability.slots.some(s => s.available_options?.some(o => o.table_ids.length === 2 && o.table_ids.every(id => pair.includes(id))))) choices.push({ids:pair,capacity:pair.reduce((n,id)=>n+r.tables.find(t=>t.id===id).capacity,0)});
+  const choices = r.tables.map(t => ({ids:[t.id],capacity:currentSearch.terms.capacities[t.id]}));
+  for (const pair of r.combinable || []) if (availability.slots.some(s => s.available_options?.some(o => o.table_ids.length === 2 && o.table_ids.every(id => pair.includes(id))))) choices.push({ids:pair,capacity:pair.reduce((n,id)=>n+currentSearch.terms.capacities[id],0)});
   $('grid-area').innerHTML = `<div class="seating-grid" ${test('availability-grid')}>${choices.map((choice,index) => `<article class="seating-card"><div>${choice.ids.length > 1 ? '<span class="pair-tag">Together at two tables</span>' : ''}<h3>${choice.ids.length === 1 ? 'Table ' : 'Tables '}${esc(seatingLabel(r,choice.ids))}</h3><div class="seat-meta">Up to ${esc(choice.capacity)} guests</div></div><div class="times">${availability.slots.map((slot,slotIndex) => {
     const available = choice.ids.length === 1 ? slot.available_table_ids.includes(choice.ids[0]) : slot.available_options?.some(o => o.table_ids.length === 2 && o.table_ids.every(id => choice.ids.includes(id)));
     const selected = booking && booking.r.id === r.id && booking.wall === slot.starts_at_local && booking.ids.join('|') === choice.ids.join('|');
     return `<button type="button" class="time-cell${selected ? ' selected' : ''}" ${test('slot-'+choice.ids.join('+')+'-'+slot.starts_at_local.slice(11))} data-available="${!!available}" data-choice="${index}" data-slot="${slotIndex}" ${available ? '' : 'disabled'} aria-label="${esc((choice.ids.length > 1 ? 'Tables ' : 'Table ')+seatingLabel(r,choice.ids)+', '+slot.starts_at_local.slice(11)+(available ? ', available' : ', unavailable'))}" aria-pressed="${!!selected}">${esc(slot.starts_at_local.slice(11))}</button>`;
-  }).join('')}</div></article>`).join('')}</div>`;
+  }).join('')}</div>${explanationMarkup(choice,availability.slots,r)}</article>`).join('')}</div>`;
   document.querySelectorAll('[data-choice]').forEach(button => button.onclick = () => {
     if (button.dataset.available !== 'true') return;
     if (!session) { feedback('auth-feedback','auth-error','Please sign in to reserve your table.'); $('auth-feedback').insertAdjacentHTML('beforeend','<a href="/login">Sign in →</a>'); return; }
     const choice = choices[Number(button.dataset.choice)], slot = availability.slots[Number(button.dataset.slot)];
-    booking = {r,ids:[...choice.ids],wall:slot.starts_at_local,party:query.party,attempt:null}; renderBooking(); renderResults(true);
+    booking = {r,terms:currentSearch.terms,ids:[...choice.ids],wall:slot.starts_at_local,party:query.party,attempt:null}; renderBooking(); renderResults(true);
     $('booking-party-size').focus({preventScroll:true}); if (innerWidth < 900) $('booking').scrollIntoView({behavior:'smooth',block:'start'});
   });
 }
@@ -94,6 +111,7 @@ function renderBooking() {
   $('booking').innerHTML = `<section class="booking-panel" ${test('booking-form')}><p class="eyebrow">Your place for the evening</p><h2>Make it a reservation.</h2><div class="booking-summary" ${test('booking-summary')}><strong>${esc(b.r.name)}</strong><br>${b.ids.length > 1 ? 'Tables ' : 'Table '}${esc(seatingLabel(b.r,b.ids))}<br>${esc(dateLabel(b.wall.slice(0,10)))} · ${esc(b.wall.slice(11))}</div><form id="book-form"><label for="booking-party-size">Guests at your table</label><input id="booking-party-size" ${test('booking-party-size')} type="number" min="1" step="1" value="${esc(b.party)}" required><div id="booking-feedback" aria-live="polite"></div><button class="primary" id="book-submit" ${test('booking-submit')}>Reserve this table</button></form><p class="fine-print">Your table is reserved for ${esc(b.r.reservation_duration_minutes)} minutes. Changes and cancellations close ${esc(b.r.cancellation_cutoff_minutes)} minutes before your reservation.</p><div id="confirmation-area"></div></section>`;
   $('booking-party-size').oninput = () => { b.attempt = null; $('confirmation-area').innerHTML = ''; feedback('booking-feedback','booking-error',''); $('book-submit').textContent = 'Reserve this table'; };
   $('book-form').onsubmit = event => { event.preventDefault(); submitBooking(b); };
+  document.querySelector('.booking-panel .fine-print').textContent = `Your table is reserved for ${b.terms.reservation_duration_minutes} minutes. Changes and cancellations close ${b.terms.cancellation_cutoff_minutes} minutes before your reservation.`;
 }
 function newKey() { if (globalThis.crypto?.randomUUID) return crypto.randomUUID(); return 'tk-'+Date.now().toString(36)+'-'+Array.from(crypto.getRandomValues(new Uint32Array(4)),n=>n.toString(16)).join(''); }
 async function submitBooking(b) {
@@ -110,6 +128,7 @@ async function submitBooking(b) {
     if (booking !== b || b.attempt !== attempt) return;
     $('confirmation-area').innerHTML = `<div class="confirmation" ${test('confirmation')} role="status"><p class="eyebrow">You’re on the guest list</p><h3>We’ll save you a seat.</h3><p class="muted" style="font-size:12px;margin-bottom:0">Your confirmation reference</p><div class="reference" ${test('confirmation-reference')}>${esc(result.reference)}</div><div class="confirmation-details" ${test('confirmation-details')}>${esc(b.r.name)} · ${esc(seatingLabel(b.r,result.table_ids || [result.table_id]))}<br>${esc(result.starts_at_local.slice(0,10))} · ${esc(result.starts_at_local.slice(11))} · ${esc(result.party_size)} guests</div><p class="muted" ${test('confirmation-tables')}>${esc(seatingLabel(b.r,result.table_ids || [result.table_id]))}</p><a href="/lookup">Manage your reservation →</a></div>`;
     button.textContent = 'Reservation confirmed · Send again';
+    $('confirmation-area').insertAdjacentHTML('beforeend',termsMarkup(result.accepted_terms));
   } catch (error) {
     if (booking !== b || b.attempt !== attempt) return;
     if (!(error instanceof Rejection) || error.status >= 500) { feedback('booking-feedback','booking-uncertain','We couldn’t confirm the response. Your reservation may have been made. Keep these details unchanged and retry safely to recover your reference.','uncertain'); button.textContent = 'Retry this reservation'; }
@@ -134,6 +153,59 @@ function renderReservation(record,r) {
     const version = lookupVersion; const button = $('cancel-reservation'); button.disabled = true; feedback('reservation-feedback','reservation-error','');
     try { const updated = await api('/reservations/'+encodeURIComponent(record.reference)+'/cancel',{method:'POST',authenticated:true}); if (version === lookupVersion) renderReservation(updated,r); }
     catch(error) { if (version === lookupVersion) { feedback('reservation-feedback','reservation-error',friendly(error)); button.disabled = false; } }
+  };
+  const card = document.querySelector('[data-testid="reservation-detail"]');
+  card.insertAdjacentHTML('beforeend',termsMarkup(record.accepted_terms));
+  const cutoffText = card.querySelector('.cancel-button + p');
+  if (cutoffText && record.accepted_terms) cutoffText.textContent = `Cancellations close ${record.accepted_terms.cancellation_cutoff_minutes} minutes before your table is ready.`;
+  card.insertAdjacentHTML('beforeend','<section id="history-area" aria-live="polite"><div class="loading">Reading your booking history…</div></section>');
+  loadHistory(record,r,lookupVersion);
+  if (record.status === 'confirmed') renderAgreementTools(record,r,card);
+}
+
+async function loadHistory(record,r,version) {
+  try {
+    const data = await api('/reservations/'+encodeURIComponent(record.reference)+'/history',{authenticated:true});
+    if (lookupVersion !== version || !document.querySelector('[data-testid="reservation-status"]') || document.querySelector('[data-testid="reservation-status"]').textContent !== record.status) return;
+    $('history-area').innerHTML = `<h3>Reservation history</h3><ol class="history-list" ${test('reservation-history')}>${data.entries.map(e=>`<li><strong>${esc({created:'Reservation recorded',changed:'Booking changed',cancelled:'Reservation cancelled'}[e.event] || e.event)}</strong><span>${esc(e.at.replace('T',' '))} · Revision ${esc(e.revision)}</span>${e.changes.length ? '<ul>'+e.changes.map(c=>`<li>${esc(changeLabel(c,r))}</li>`).join('')+'</ul>' : ''}<small>${e.accepted_terms.policy_version ? 'Policy '+esc(e.accepted_terms.policy_version) : 'Original restaurant policy'}</small></li>`).join('')}</ol>`;
+  } catch (error) {
+    if (lookupVersion !== version || !$('history-area')) return;
+    $('history-area').innerHTML = error.status === 404 ? '' : '<div class="feedback error" role="alert">We couldn’t load your history. Look up the reservation again to retry.</div>';
+  }
+}
+function changeLabel(change,r) {
+  const value = v => change.field === 'table_id' ? seatingLabel(r,[v]) : change.field === 'table_ids' ? seatingLabel(r,v) : String(v);
+  const label = {table_id:'Seating',table_ids:'Seating',starts_at_local:'Local start',party_size:'Guests'}[change.field] || change.field;
+  return label+': '+(change.from === null ? '' : value(change.from)+' → ')+value(change.to);
+}
+function renderAgreementTools(record,r,card) {
+  const version = lookupVersion;
+  card.insertAdjacentHTML('beforeend',`<details class="agreement-tool"><summary>Change your reservation</summary><form id="amend-form">${field('amend-date','Date','date',`value="${esc(record.starts_at_local.slice(0,10))}" required`)}${field('amend-time','Local time','time',`value="${esc(record.starts_at_local.slice(11))}" step="60" required`)}<div class="field"><label for="amend-tables">Seating</label><select id="amend-tables">${[...r.tables.map(t=>[t.id]),...(r.combinable || [])].map(ids=>`<option value="${esc(JSON.stringify(ids))}" ${ids.length === (record.table_ids || [record.table_id]).length && ids.every(id=>(record.table_ids || [record.table_id]).includes(id)) ? 'selected' : ''}>${esc(seatingLabel(r,ids))}</option>`).join('')}</select></div>${field('amend-party','Guests','number',`min="1" step="1" value="${esc(record.party_size)}" required`)}<div id="amend-feedback" aria-live="polite"></div><button class="secondary" ${test('amend-submit')}>Save changes</button><p class="fine-print">A change adopts the restaurant’s policy for the new date. Your current cancellation window still applies.</p></form></details><details class="agreement-tool"><summary>Make this a recurring reservation</summary><p class="muted">Keep this booking and add future visits at the same local time. Each visit keeps its own booking terms and can be managed separately.</p><form id="series-form">${field('series-count','Total visits, including this one','number','min="2" max="12" step="1" value="2" required')}${field('series-interval','Weeks between visits','number','min="1" max="4" step="1" value="1" required')}<div id="series-feedback" aria-live="polite"></div><button class="secondary" ${test('series-submit')}>Reserve future visits</button></form><div id="series-area"></div></details>`);
+  $('amend-form').onsubmit = async event => {
+    event.preventDefault(); const button = event.submitter; button.disabled = true; feedback('amend-feedback','amend-error','');
+    const body = {starts_at_local:$('amend-date').value+'T'+$('amend-time').value,table_ids:JSON.parse($('amend-tables').value),party_size:Number($('amend-party').value),...(record.revision ? {expected_revision:record.revision} : {})};
+    try { const updated = await api('/reservations/'+encodeURIComponent(record.reference),{method:'PATCH',body,authenticated:true}); if (version === lookupVersion) { ++lookupVersion; renderReservation(updated,r); } }
+    catch (error) { if (version === lookupVersion) feedback('amend-feedback','amend-error',error.code === 'stale_revision' ? 'This booking changed elsewhere. Look it up again before saving your changes.' : friendly(error)); }
+    finally { button.disabled = false; }
+  };
+  let attempt = null;
+  $('series-form').onsubmit = async event => {
+    event.preventDefault(); const button = event.submitter;
+    const body = {anchor_reference:record.reference,count:Number($('series-count').value),interval_weeks:Number($('series-interval').value)};
+    const signature = JSON.stringify(body);
+    if (!attempt || attempt.signature !== signature || attempt.user !== session?.user_id) attempt = {body,key:newKey(),signature,user:session?.user_id};
+    if (attempt.inFlight) return;
+    const active = attempt; active.inFlight = true; button.disabled = true; feedback('series-feedback','series-error',''); $('series-area').innerHTML = '';
+    try {
+      const data = await api('/series',{method:'POST',body:active.body,key:active.key,authenticated:true});
+      if (version !== lookupVersion) return;
+      feedback('series-feedback','series-success','Your future visits are reserved.','success');
+      $('series-area').innerHTML = `<ol class="history-list" ${test('series-occurrences')}>${data.occurrences.map(o=>`<li><strong>${esc(dateLabel(o.reservation.starts_at_local.slice(0,10)))} · ${esc(o.reservation.starts_at_local.slice(11))}</strong><span>${esc(seatingLabel(r,o.reservation.table_ids || [o.reservation.table_id]))} · ${esc(o.reference)}</span><span>${esc(o.reservation.accepted_terms?.reservation_duration_minutes ?? r.reservation_duration_minutes)} minutes · ${esc(o.reservation.status)}</span></li>`).join('')}</ol>`;
+    } catch (error) {
+      if (version !== lookupVersion) return;
+      if (!(error instanceof Rejection) || error.status >= 500) feedback('series-feedback','series-uncertain','Your visits may have been reserved. Keep these details unchanged and retry to recover the original agreement.','uncertain');
+      else feedback('series-feedback','series-error',error.code === 'already_in_series' ? 'This reservation already belongs to a recurring agreement.' : friendly(error));
+    } finally { active.inFlight = false; if (version === lookupVersion) button.disabled = false; }
   };
 }
 renderSession();
