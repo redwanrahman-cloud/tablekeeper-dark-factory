@@ -536,7 +536,7 @@ def dispatch(method, path, query, body, headers):
     if method == 'GET' and path == '/restaurants':
         return 200, {'restaurants': [{k: r[k] for k in ('id', 'name', 'timezone')} for r in state['restaurants'].values()]}
     if method == 'GET' and re.fullmatch(r'/restaurants/[^/]+', path):
-        return 200, json_copy(restaurant(state, path.split('/')[2]))
+        return 200, json_copy(restaurant(state, unquote(path.split('/')[2])))
     if method == 'GET' and path == '/availability':
         rid, day, size = (query.get(k, [''])[0] for k in ('restaurant_id', 'date', 'party_size'))
         if not rid or len(rid) > 64 or not re.fullmatch(r'\d{4}-\d{2}-\d{2}', day) or not re.fullmatch(r'[0-9]+', size):
@@ -636,7 +636,7 @@ def dispatch(method, path, query, body, headers):
         return 200, {'reservations': [public(r) for r in records]}
     elif re.fullmatch(r'/reservations/[^/]+(?:/cancel)?', path):
         parts = path.split('/')
-        record = owned(state, parts[2], uid)
+        record = owned(state, unquote(parts[2]), uid)
         if method == 'POST' and len(parts) == 4:
             if record['status'] != 'cancelled':
                 cutoff(state, record)
@@ -709,7 +709,9 @@ class Handler(BaseHTTPRequestHandler):
                     fail(400, 'malformed_request')
             url = urlsplit(self.path)
             with LOCK:
-                status, result = dispatch(self.command, unquote(url.path), parse_qs(url.query, keep_blank_values=True), body, self.headers)
+                # Segment first, decode opaque IDs afterwards: an encoded slash
+                # is part of an identifier, not a new route component.
+                status, result = dispatch(self.command, url.path, parse_qs(url.query, keep_blank_values=True), body, self.headers)
                 payload = json_text(result).encode() if result is not None else b''
         except ApiError as error:
             status = error.status

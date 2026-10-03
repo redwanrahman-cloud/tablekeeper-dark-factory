@@ -325,6 +325,17 @@ class Invariants(unittest.TestCase):
         restaurant['combinable'] = [['b', 'a'], ['b', 'c']]
         return fixture
 
+    def test_opaque_restaurant_identifier_is_decoded_after_route_segmentation(self):
+        fixture = copy.deepcopy(self.fixture)
+        fixture['restaurants'][0]['id'] = 'venue/dining % room'
+        self.load_fixture(fixture)
+        status, restaurant = self.call('GET', '/restaurants/venue%2Fdining%20%25%20room', auth=False)
+        self.assertEqual(status, 200)
+        self.assertEqual(restaurant['id'], 'venue/dining % room')
+        status, booking = self.call('POST', '/reservations', {**self.booking(), 'restaurant_id':restaurant['id']}, 'opaque')
+        self.assertEqual(status,201)
+        self.assertEqual(booking['restaurant_id'],restaurant['id'])
+
     def load_fixture(self, fixture):
         self.assertEqual(self.call('POST', '/_test/reset', fixture, auth=False)[0], 204)
         self.token = self.call('POST', '/auth/login', {'email': 'owner@example.test', 'password': 'long-password'}, auth=False)[1]['token']
