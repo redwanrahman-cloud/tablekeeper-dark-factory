@@ -37,7 +37,7 @@ class Invariants(unittest.TestCase):
             headers['Authorization'] = 'Bearer ' + self.token
         if key is not None:
             headers['Idempotency-Key'] = key
-        req = Request(self.base + path, data=json.dumps(body).encode() if body is not None else None,
+        req = Request(self.base + path, data=(body if isinstance(body, bytes) else json.dumps(body).encode()) if body is not None else None,
                       method=method, headers=headers)
         try:
             response = urlopen(req, timeout=5)
@@ -183,6 +183,16 @@ class Invariants(unittest.TestCase):
         self.assertEqual(self.call('GET', '/reservations/' + record['reference'])[0], 404)
         self.assertEqual(self.call('POST', '/reservation-moves', {'moves': [{'reference': record['reference']}]}, 'private')[0], 404)
         self.assertEqual(self.call('GET', '/reservations')[1], {'reservations': []})
+
+    def test_ignored_large_numbers_remain_exportable_and_replayable(self):
+        body = json.dumps(self.booking())[:-1].encode() + b',"unknown":1e999}'
+        status, receipt = self.call('POST', '/reservations', body, 'large')
+        self.assertEqual(status, 201)
+        with urlopen(self.base + '/_test/export', timeout=5) as response:
+            exported = response.read()
+        self.assertEqual(self.call('POST', '/_test/reset', self.fixture, auth=False)[0], 204)
+        self.assertEqual(self.call('POST', '/_test/import', exported, auth=False)[0], 204)
+        self.assertEqual(self.call('POST', '/reservations', body, 'large'), (200, receipt))
 
 
 if __name__ == '__main__':

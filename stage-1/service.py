@@ -8,6 +8,7 @@ import re
 import secrets
 import threading
 from datetime import date, datetime, timedelta, timezone
+from decimal import Decimal
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, unquote, urlsplit
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -124,6 +125,18 @@ def same_json(a, b):
     if isinstance(a, list) and isinstance(b, list):
         return len(a) == len(b) and all(same_json(x, y) for x, y in zip(a, b))
     return a == b
+
+
+def json_text(value):
+    """Preserve arbitrary JSON numbers in ignored fields and retry receipts."""
+    if isinstance(value, Decimal):
+        return str(value)
+    if isinstance(value, dict):
+        return '{' + ','.join(json.dumps(k, ensure_ascii=False) + ':' + json_text(v)
+                              for k, v in value.items()) + '}'
+    if isinstance(value, list):
+        return '[' + ','.join(json_text(v) for v in value) + ']'
+    return json.dumps(value, ensure_ascii=False, allow_nan=False)
 
 
 def validate_restaurant(raw):
@@ -515,7 +528,8 @@ class Handler(BaseHTTPRequestHandler):
                         fail(400, 'malformed_request')
                     raw = self.rfile.read(length)
                     if raw:
-                        body = obj(json.loads(raw, parse_constant=lambda _: fail(400, 'malformed_request')))
+                        body = obj(json.loads(raw, parse_float=Decimal,
+                                              parse_constant=lambda _: fail(400, 'malformed_request')))
                     elif self.path.split('?')[0] not in ('/health',) and not self.path.split('?')[0].endswith('/cancel'):
                         fail(400, 'malformed_request')
                 except (ValueError, UnicodeError, json.JSONDecodeError):
@@ -523,7 +537,7 @@ class Handler(BaseHTTPRequestHandler):
             url = urlsplit(self.path)
             with LOCK:
                 status, result = dispatch(self.command, unquote(url.path), parse_qs(url.query, keep_blank_values=True), body, self.headers)
-                payload = json.dumps(result, ensure_ascii=False, allow_nan=False).encode() if result is not None else b''
+                payload = json_text(result).encode() if result is not None else b''
         except ApiError as error:
             status = error.status
             payload = json.dumps({'error': {'code': error.code, 'message': error.code.replace('_', ' ')}}).encode()
