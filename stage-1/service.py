@@ -239,22 +239,22 @@ def proposal(state, body, restaurant_id=None):
         fail(404, 'not_found')
     zone = ZoneInfo(r['timezone'])
     start = resolve(wall, zone)
-    try:
-        end = start + timedelta(minutes=r['reservation_duration_minutes'])
-    except OverflowError:
-        fail()
     hours = next((h for h in r['opening_hours'] if h['weekday'] == WEEKDAYS[wall.weekday()]), None)
     if hours is None:
         fail(422, 'outside_opening_hours')
     opens = datetime.combine(wall.date(), datetime.strptime(hours['opens'], '%H:%M').time())
     closes = datetime.combine(wall.date(), datetime.strptime(hours['closes'], '%H:%M').time())
-    if wall < opens or wall >= closes or end > resolve(closes, zone):
+    # Compare available absolute time before adding duration. This also handles
+    # valid dates near datetime.max and durations too large for timedelta.
+    remaining_seconds = (resolve(closes, zone) - start).total_seconds()
+    if wall < opens or wall >= closes or r['reservation_duration_minutes'] * 60 > remaining_seconds:
         fail(422, 'outside_opening_hours')
     minutes = int((wall - opens).total_seconds() // 60)
     if minutes % r['slot_minutes']:
         fail(422, 'not_on_slot_grid')
     if size > table['capacity']:
         fail(422, 'party_exceeds_capacity')
+    end = start + timedelta(minutes=r['reservation_duration_minutes'])
     return {'restaurant_id': rid, 'table_id': tid, 'party_size': size,
             'starts_at_local': wall.isoformat(timespec='minutes'),
             'starts_at': stamp(start, zone), 'ends_at': stamp(end, zone)}
@@ -459,8 +459,9 @@ def dispatch(method, path, query, body, headers):
             while wall < closes:
                 try:
                     start = resolve(wall, zone)
-                    end = start + timedelta(minutes=r['reservation_duration_minutes'])
-                    if end <= resolve(closes, zone):
+                    remaining_seconds = (resolve(closes, zone) - start).total_seconds()
+                    if r['reservation_duration_minutes'] * 60 <= remaining_seconds:
+                        end = start + timedelta(minutes=r['reservation_duration_minutes'])
                         slot = {'restaurant_id': rid, 'starts_at': stamp(start, zone), 'ends_at': stamp(end, zone)}
                         available = []
                         for table in r['tables']:

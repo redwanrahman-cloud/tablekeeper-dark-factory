@@ -245,6 +245,27 @@ class Invariants(unittest.TestCase):
         self.assertEqual(self.call('POST', '/_test/import', snapshot, auth=False)[0], 204)
         self.assertEqual(self.call('POST', '/auth/login', credentials, auth=False)[1]['display_name'], '')
 
+    def test_maximum_calendar_date_checks_fit_before_duration_arithmetic(self):
+        fixture = copy.deepcopy(self.fixture)
+        for hours in fixture['restaurants'][0]['opening_hours']:
+            hours.update(opens='23:00', closes='23:30')
+        self.assertEqual(self.call('POST', '/_test/reset', fixture, auth=False)[0], 204)
+        self.token = self.call('POST', '/auth/login', {'email': 'owner@example.test', 'password': 'long-password'}, auth=False)[1]['token']
+        status, availability = self.call('GET', '/availability?restaurant_id=venue&date=9999-12-31&party_size=2', auth=False)
+        self.assertEqual(status, 200)
+        self.assertEqual(availability['slots'], [])
+        body = {**self.booking(), 'starts_at_local': '9999-12-31T23:00'}
+        status, error = self.call('POST', '/reservations', body, 'last-day')
+        self.assertEqual((status, error['error']['code']), (422, 'outside_opening_hours'))
+        self.assertEqual(self.call('GET', '/reservations')[1], {'reservations': []})
+        self.assertEqual(self.call('POST', '/reservations', {**body, 'table_id': 'missing'}, 'last-day')[0], 404)
+        # Even an enormous duration must be classified as nonfitting, not overflow.
+        fixture['restaurants'][0]['reservation_duration_minutes'] = 10 ** 30
+        self.assertEqual(self.call('POST', '/_test/reset', fixture, auth=False)[0], 204)
+        self.token = self.call('POST', '/auth/login', {'email': 'owner@example.test', 'password': 'long-password'}, auth=False)[1]['token']
+        self.assertEqual(self.call('GET', '/availability?restaurant_id=venue&date=9999-12-31&party_size=2', auth=False)[1]['slots'], [])
+        self.assertEqual(self.call('POST', '/reservations', body, 'last-day')[1]['error']['code'], 'outside_opening_hours')
+
 
 if __name__ == '__main__':
     unittest.main()
