@@ -263,8 +263,11 @@ def validate_restaurant(raw):
     for pair in pairs:
         if not isinstance(pair, list):
             fail(400, 'malformed_request')
-        if len(pair) != 2 or any(not isinstance(t, str) for t in pair):
+        if len(pair) != 2:
             fail()
+        # Fixture members have the same JSON string/type and ID range rules
+        # as reservation selections. Cardinality is a separate value rule.
+        pair = [ident({'id': member}, 'id') for member in pair]
         if len(set(pair)) != 2 or any(t not in ids for t in pair) or frozenset(pair) in seen:
             fail()
         seen.add(frozenset(pair))

@@ -336,6 +336,23 @@ class Invariants(unittest.TestCase):
         self.assertEqual(status,201)
         self.assertEqual(booking['restaurant_id'],restaurant['id'])
 
+    def test_combination_fixture_member_types_and_failed_reset_are_atomic(self):
+        self.load_fixture(self.combined_fixture())
+        original = self.create('original')
+        before = self.call('GET', '/_test/export', auth=False)[1]
+        for member in (False, 1, None, {}, []):
+            invalid = self.combined_fixture()
+            invalid['restaurants'][0]['combinable'] = [['a', member]]
+            status, error = self.call('POST', '/_test/reset', invalid, auth=False)
+            self.assertEqual((status,error['error']['code']),(400,'malformed_request'))
+            self.assertEqual(self.call('GET', '/_test/export', auth=False)[1],before)
+            self.assertEqual(self.call('POST', '/reservations', self.booking(), 'original'),(200,original))
+        for pair in (['a'], ['a','b','c'], ['a','a'], ['a','missing'], ['a',''], ['a','x'*65]):
+            invalid = self.combined_fixture()
+            invalid['restaurants'][0]['combinable'] = [pair]
+            self.assertEqual(self.call('POST', '/_test/reset', invalid, auth=False)[0],422)
+            self.assertEqual(self.call('GET', '/_test/export', auth=False)[1],before)
+
     def load_fixture(self, fixture):
         self.assertEqual(self.call('POST', '/_test/reset', fixture, auth=False)[0], 204)
         self.token = self.call('POST', '/auth/login', {'email': 'owner@example.test', 'password': 'long-password'}, auth=False)[1]['token']
