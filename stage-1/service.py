@@ -53,16 +53,21 @@ def integer(body, key, minimum=1):
     if key not in body:
         fail()
     value = body[key]
-    if type(value) is not int:
+    if type(value) is not int and not isinstance(value, Decimal):
         fail(400, 'malformed_request')
-    if value < minimum:
+    if not integral_number(value) or value < minimum:
         fail()
-    return value
+    return int(value)
+
+
+def integral_number(value):
+    return type(value) is int or (isinstance(value, Decimal) and value.is_finite()
+                                 and value == value.to_integral_value())
 
 
 def party(body):
     value = body.get('party_size')
-    if type(value) is not int or value < 1:
+    if not integral_number(value) or value < 1:
         fail()
     return value
 
@@ -285,7 +290,7 @@ def proposal(state, body, restaurant_id=None):
     if size > table['capacity']:
         fail(422, 'party_exceeds_capacity')
     end = duration_end(start, r['reservation_duration_minutes'], zone)
-    return {'restaurant_id': rid, 'table_id': tid, 'party_size': size,
+    return {'restaurant_id': rid, 'table_id': tid, 'party_size': int(size),
             'starts_at_local': wall.isoformat(timespec='minutes'),
             'starts_at': stamp(start, zone), 'ends_at': stamp(end, zone)}
 
@@ -318,7 +323,7 @@ def owned(state, ref, uid):
 
 def cutoff(state, record):
     minutes = restaurant(state, record['restaurant_id'])['cancellation_cutoff_minutes']
-    if absolute_seconds(datetime.now(UTC)) >= absolute_seconds(datetime.fromisoformat(record['starts_at'])) - minutes * 60:
+    if absolute_seconds(datetime.fromisoformat(record['starts_at'])) - absolute_seconds(datetime.now(UTC)) <= minutes * 60:
         fail(409, 'cutoff_passed')
 
 
@@ -370,7 +375,7 @@ def build_fixture(body):
 
 def validate_import(body):
     # Imports validate a detached candidate before replacing any live data.
-    if body.get('track') != 'tablekeeper' or type(body.get('format_version')) is not int or body['format_version'] != 1:
+    if body.get('track') != 'tablekeeper' or not integral_number(body.get('format_version')) or body['format_version'] != 1:
         fail()
     candidate = body.get('state')
     if not isinstance(candidate, dict) or set(candidate) != set(empty_state()):

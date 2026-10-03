@@ -292,5 +292,49 @@ class Invariants(unittest.TestCase):
                     self.assertEqual((status, error['error']['code']), (409, 'cutoff_passed'))
 
 
+    def test_integral_JSON_party_value_in_create_and_replay(self):
+        body = {**self.booking(), 'party_size': 4.0}
+        status, record = self.call('POST', '/reservations', body, 'integral')
+        self.assertEqual(status, 201)
+        self.assertEqual(record['party_size'], 4)
+        self.assertEqual(self.call('POST', '/reservations', {**body, 'party_size': 4}, 'integral'), (200, record))
+
+    def test_integral_JSON_party_value_in_patch(self):
+        record = self.create('original')
+        status, changed = self.call('PATCH', '/reservations/' + record['reference'], {'party_size': 4.0})
+        self.assertEqual(status, 200)
+        self.assertEqual(changed['party_size'], 4)
+        for invalid in (4.5, True, '4', 0.0):
+            status, error = self.call('PATCH', '/reservations/' + record['reference'], {'party_size': invalid})
+            self.assertEqual((status, error['error']['code']), (422, 'validation_failed'))
+            self.assertEqual(self.call('GET', '/reservations/' + record['reference'])[1], changed)
+
+    def test_integral_JSON_party_value_in_batch(self):
+        first, second = self.create('a'), self.create('b', 'b')
+        body = {'moves': [{'reference': first['reference'], 'party_size': 4.0},
+                          {'reference': second['reference'], 'party_size': 4.0}]}
+        status, receipt = self.call('POST', '/reservation-moves', body, 'integral')
+        self.assertEqual(status, 201)
+        self.assertEqual([r['party_size'] for r in receipt['reservations']], [4, 4])
+        self.assertEqual(self.call('POST', '/reservation-moves', body, 'integral'), (200, receipt))
+
+    def test_integer_configuration_uses_JSON_number_value_semantics(self):
+        fixture = copy.deepcopy(self.fixture)
+        restaurant = fixture['restaurants'][0]
+        for key in ('slot_minutes', 'reservation_duration_minutes', 'cancellation_cutoff_minutes'):
+            restaurant[key] = float(restaurant[key])
+        for table in restaurant['tables']:
+            table['capacity'] = float(table['capacity'])
+        self.assertEqual(self.call('POST', '/_test/reset', fixture, auth=False)[0], 204)
+        snapshot = self.call('GET', '/_test/export', auth=False)[1]
+        snapshot['format_version'] = 1.0
+        self.assertEqual(self.call('POST', '/_test/import', snapshot, auth=False)[0], 204)
+        for value, expected in [(3.5, 422), ('4', 400), (False, 400)]:
+            invalid = copy.deepcopy(fixture)
+            invalid['restaurants'][0]['tables'][0]['capacity'] = value
+            self.assertEqual(self.call('POST', '/_test/reset', invalid, auth=False)[0], expected)
+            self.assertEqual(self.call('GET', '/restaurants/venue', auth=False)[1]['tables'][0]['capacity'], 4)
+
+
 if __name__ == '__main__':
     unittest.main()
