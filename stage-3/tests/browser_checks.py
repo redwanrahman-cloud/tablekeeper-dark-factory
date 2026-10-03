@@ -233,6 +233,43 @@ async def main(base, out, previous):
             assert not errors,errors
             results.append(f'{width}px dated terms/explanations/history/recurrence lost response/amendment/long labels/focus: PASS')
             await context.close()
+        fixture = original_fixture
+        contrast_results = []
+        for width in (375,1440):
+            context,page = await setup(width)
+            cell = page.get_by_test_id('slot-terrace+garden-19:00')
+            async def audit_contrast(state):
+                row = await cell.evaluate('''e => {
+                  const channels=s=>s.match(/[\\d.]+/g).slice(0,3).map(Number);
+                  const light=s=>channels(s).map(v=>v/255)
+                    .map(v=>v<=.04045?v/12.92:((v+.055)/1.055)**2.4)
+                    .reduce((n,v,i)=>n+v*[.2126,.7152,.0722][i],0);
+                  const css=getComputedStyle(e),a=light(css.color),b=light(css.backgroundColor);
+                  return {color:css.color,background:css.backgroundColor,
+                    selected:e.classList.contains('selected'),hover:e.matches(':hover'),
+                    focused:e===document.activeElement,available:e.dataset.available,
+                    contrast:(Math.max(a,b)+.05)/(Math.min(a,b)+.05)};
+                }''')
+                row.update(width=width,state=state)
+                contrast_results.append(row)
+                (out/'time-cell-contrast.json').write_text(json.dumps(contrast_results,indent=2)+'\n')
+                assert row['contrast']>=4.5,row
+                return row
+            await cell.hover()
+            hovered = await audit_contrast('available-hover')
+            assert not hovered['selected'] and hovered['hover']
+            await cell.click()
+            await page.get_by_test_id('booking-form').wait_for()
+            await cell.hover()
+            selected = await audit_contrast('selected-hover')
+            assert selected['selected'] and selected['hover'] and selected['available']=='true'
+            await page.mouse.move(0,0)
+            await cell.focus()
+            focused = await audit_contrast('selected-focus')
+            assert focused['selected'] and focused['focused'] and not focused['hover']
+            await page.screenshot(path=str(out/f'selected-focus-{width}.png'),full_page=True)
+            results.append(f'{width}px available-hover/selected-hover/selected-focus contrast: PASS')
+            await context.close()
         await browser.close()
     print('\n'.join(results))
     (out/'browser-results.json').write_text(json.dumps(results,indent=2)+'\n')
