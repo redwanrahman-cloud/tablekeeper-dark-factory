@@ -61,6 +61,43 @@ async def main(base,out):
             await expect(page.get_by_test_id('confirmation-tables')).to_have_text('Terrace')
             await expect(page.get_by_test_id('confirmation-reference')).to_have_text(ref)
             assert len(requests)==2 and requests[0]==requests[1]
+            # A failed individual read can recover only from an authoritative
+            # owner-list response. If all reads fail, show the known reference
+            # with an explicit caveat; never show receipt seating as current.
+            summary=await page.get_by_test_id('booking-summary').inner_text()
+            party=await page.get_by_test_id('booking-party-size').input_value()
+            for fault in ('network','503'):
+                async def fail_read(route):
+                    if route.request.method != 'GET':
+                        await route.continue_()
+                    elif fault=='network':
+                        await route.abort('failed')
+                    else:
+                        await route.fulfill(status=503,content_type='application/json',body='{"error":{"code":"unavailable","message":"Read unavailable"}}')
+                await page.route('**/reservations/'+ref,fail_read)
+                await page.get_by_test_id('booking-submit').click()
+                await expect(page.get_by_test_id('confirmation-tables')).to_have_text('Terrace')
+                await expect(page.get_by_test_id('booking-submit')).to_be_enabled()
+                await expect(page.get_by_test_id('confirmation-read-error')).to_have_count(0)
+                await page.route('**/reservations',fail_read)
+                await page.get_by_test_id('booking-submit').click()
+                await expect(page.get_by_test_id('confirmation-read-error')).to_be_visible()
+                await expect(page.get_by_test_id('confirmation-tables')).to_have_text('Current seating unavailable')
+                await expect(page.get_by_test_id('confirmation-reference')).to_have_text(ref)
+                await expect(page.get_by_test_id('booking-submit')).to_be_enabled()
+                await expect(page.get_by_test_id('booking-error')).to_have_count(0)
+                await expect(page.get_by_test_id('booking-uncertain')).to_have_count(0)
+                assert await page.get_by_test_id('booking-summary').inner_text()==summary
+                assert await page.get_by_test_id('booking-party-size').input_value()==party
+                assert 'Garden' not in await page.get_by_test_id('confirmation').inner_text()
+                assert 'Terrace' not in await page.get_by_test_id('confirmation').inner_text()
+                await page.screenshot(path=str(out/f'{width}-{fault}-reads-unavailable.png'),full_page=True)
+                await page.unroute('**/reservations',fail_read)
+                await page.unroute('**/reservations/'+ref,fail_read)
+                await page.get_by_test_id('booking-submit').click()
+                await expect(page.get_by_test_id('confirmation-tables')).to_have_text('Terrace')
+                await expect(page.get_by_test_id('confirmation-read-error')).to_have_count(0)
+            assert all(request==requests[0] for request in requests)
             async def audit(stage):
                 row=await page.get_by_test_id('accepted-terms').locator('span').evaluate('''e=>{
                   let s=getComputedStyle(e),n=e,bg;
@@ -91,7 +128,7 @@ async def main(base,out):
             assert await page.get_by_test_id('slot-a+b-19:00').count()==0
             await page.screenshot(path=str(out/f'{width}-closure-grid.png'),full_page=True)
             assert not errors,errors
-            results.append(f'{width}px repair/retained confirmation retry/lookup/history/closure grid/terms contrast PASS')
+            results.append(f'{width}px repair/retained retry/authoritative fallback/all-read failures/recovery/lookup/history/closure grid/contrast PASS')
             await context.close()
         await browser.close()
     (out/'terms-contrast.json').write_text(json.dumps(measurements,indent=2))

@@ -63,6 +63,10 @@ restaurant invalidates the plan. Applied closures exclude affected seats from bo
 and availability. Seating repairs preserve accepted terms, dates and diner exception
 flags. Lookup shows reassignment history; a booking form retry reads current seating
 while retaining its original request and retry key.
+If the individual reservation read fails, confirmation tries the current owner
+list. If neither authoritative read is available, it retains the confirmed reference,
+clearly reports that current seating cannot be loaded, and offers an unchanged-form
+retry or lookup. Historical receipt seating is never presented as current state.
 
 Owners amend recurring visits with `POST /series/{id}/amend`, supplying a series
 revision, starting index and local clock time. Eligible visits retain their original

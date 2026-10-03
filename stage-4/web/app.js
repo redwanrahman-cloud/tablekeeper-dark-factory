@@ -114,6 +114,14 @@ function renderBooking() {
   document.querySelector('.booking-panel .fine-print').textContent = `Your table is reserved for ${b.terms.reservation_duration_minutes} minutes. Changes and cancellations close ${b.terms.cancellation_cutoff_minutes} minutes before your reservation.`;
 }
 function newKey() { if (globalThis.crypto?.randomUUID) return crypto.randomUUID(); return 'tk-'+Date.now().toString(36)+'-'+Array.from(crypto.getRandomValues(new Uint32Array(4)),n=>n.toString(16)).join(''); }
+async function currentReservation(reference) {
+  try { return await api('/reservations/'+encodeURIComponent(reference),{authenticated:true}); }
+  catch (_) {
+    // The owner's list is another authoritative read, never a cached receipt.
+    try { return (await api('/reservations',{authenticated:true})).reservations.find(r => r.reference === reference) || null; }
+    catch (_) { return null; }
+  }
+}
 async function submitBooking(b) {
   if (!session) { feedback('booking-feedback','booking-error','Please sign in to reserve your table.'); return; }
   const body = {restaurant_id:b.r.id,starts_at_local:b.wall,party_size:Number($('booking-party-size').value),...(b.ids.length === 1 ? {table_id:b.ids[0]} : {table_ids:[...b.ids]})};
@@ -125,10 +133,16 @@ async function submitBooking(b) {
   feedback('booking-feedback','booking-error',''); $('confirmation-area').innerHTML = '';
   try {
     const receipt = await api('/reservations',{method:'POST',body:attempt.body,key:attempt.key,authenticated:true});
-    // The receipt stays immutable. Display a fresh authoritative reservation
-    // after a retry, including operator seating changes made since booking.
-    const result = await api('/reservations/'+encodeURIComponent(receipt.reference),{authenticated:true}).catch(() => receipt);
     if (booking !== b || b.attempt !== attempt) return;
+    const result = await currentReservation(receipt.reference);
+    if (booking !== b || b.attempt !== attempt) return;
+    if (!result) {
+      // POST succeeded: its reference is known, but its historical seating is
+      // not evidence of current seating after an operator or diner amendment.
+      $('confirmation-area').innerHTML = `<div class="confirmation" ${test('confirmation')} role="status"><p class="eyebrow">Your reservation was recorded</p><h3>Keep your confirmation reference.</h3><div class="reference" ${test('confirmation-reference')}>${esc(receipt.reference)}</div><div class="confirmation-details" ${test('confirmation-details')}>${esc(b.r.name)}</div><p ${test('confirmation-tables')}>Current seating unavailable</p><div class="feedback error" ${test('confirmation-read-error')} role="alert">We couldn’t load your current seating and booking details. Keep this form unchanged and retry safely, or look up your reference to refresh them.</div><a href="/lookup">Look up your reservation →</a></div>`;
+      button.textContent = 'Refresh reservation details';
+      return;
+    }
     $('confirmation-area').innerHTML = `<div class="confirmation" ${test('confirmation')} role="status"><p class="eyebrow">You’re on the guest list</p><h3>We’ll save you a seat.</h3><p class="muted" style="font-size:12px;margin-bottom:0">Your confirmation reference</p><div class="reference" ${test('confirmation-reference')}>${esc(result.reference)}</div><div class="confirmation-details" ${test('confirmation-details')}>${esc(b.r.name)} · ${esc(seatingLabel(b.r,result.table_ids || [result.table_id]))}<br>${esc(result.starts_at_local.slice(0,10))} · ${esc(result.starts_at_local.slice(11))} · ${esc(result.party_size)} guests</div><p class="muted" ${test('confirmation-tables')}>${esc(seatingLabel(b.r,result.table_ids || [result.table_id]))}</p><a href="/lookup">Manage your reservation →</a></div>`;
     button.textContent = 'Reservation confirmed · Send again';
     $('confirmation-area').insertAdjacentHTML('beforeend',termsMarkup(result.accepted_terms));
