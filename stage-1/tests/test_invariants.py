@@ -193,6 +193,11 @@ class Invariants(unittest.TestCase):
         self.assertEqual(self.call('POST', '/_test/reset', self.fixture, auth=False)[0], 204)
         self.assertEqual(self.call('POST', '/_test/import', exported, auth=False)[0], 204)
         self.assertEqual(self.call('POST', '/reservations', body, 'large'), (200, receipt))
+        # The opaque state also survives ordinary clients decoding and re-encoding
+        # with machine-range JSON numbers, rather than forwarding raw bytes.
+        client_snapshot = self.call('GET', '/_test/export', auth=False)[1]
+        self.assertEqual(self.call('POST', '/_test/import', client_snapshot, auth=False)[0], 204)
+        self.assertEqual(self.call('POST', '/reservations', body, 'large'), (200, receipt))
 
     def test_deep_ignored_values_do_not_break_atomic_receipts(self):
         body = self.booking()

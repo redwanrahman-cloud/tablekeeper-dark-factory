@@ -383,6 +383,9 @@ def validate_import(body):
         check_occupancy(empty_state(), [r for r in candidate['reservations'].values() if r['status'] == 'confirmed'])
         keys = set()
         for receipt in candidate['receipts']:
+            if isinstance(receipt.get('body'), str):
+                receipt['body'] = obj(json.loads(receipt['body'], parse_float=Decimal,
+                                                parse_constant=lambda _: fail()))
             key = (receipt['user_id'], receipt['method'], receipt['path'], receipt['key'])
             if key in keys or key[0] not in candidate['users'] or key[1] != 'POST' or key[2] not in ('/reservations', '/reservation-moves') or not 1 <= len(key[3]) <= 255:
                 fail()
@@ -403,7 +406,12 @@ def dispatch(method, path, query, body, headers):
         STATE = build_fixture(body)
         return 204, None
     if method == 'GET' and path == '/_test/export':
-        return 200, {'track': 'tablekeeper', 'format_version': 1, 'state': json_copy(state)}
+        snapshot = json_copy(state)
+        # Opaque receipt bodies are JSON strings in the portable snapshot, so client
+        # numeric ranges cannot silently round or overflow their request values.
+        for receipt in snapshot['receipts']:
+            receipt['body'] = json_text(receipt['body'])
+        return 200, {'track': 'tablekeeper', 'format_version': 1, 'state': snapshot}
     if method == 'POST' and path == '/_test/import':
         STATE = validate_import(body)
         return 204, None
