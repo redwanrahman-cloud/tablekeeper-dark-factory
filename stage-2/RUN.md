@@ -30,6 +30,18 @@ Run the focused regression suite with Python 3.12+:
 python -m unittest discover -s tests -v
 ```
 
+The optional browser regression script needs Playwright with Chromium and httpx in
+the testing environment, never in the application image. With running Stage 2 and
+Stage 1 containers:
+
+```sh
+python tests/browser_checks.py --base-url http://localhost:8080 --previous-base-url http://localhost:8081 --out /tmp/tablekeeper-browser-checks
+```
+
+It checks desktop/375px combined booking, replay, lookup/cancel, out-of-order search,
+lost-response retry, stale availability and a populated Stage 1 migration. Screenshots
+and a summary go to the specified output directory. No credentials or exports are written.
+
 Every state operation runs under one process-wide lock. Validation constructs new
 records before committing, and batch conflict detection checks the complete proposed
 occupancy. A successful operation and its retry receipt commit in the same critical
