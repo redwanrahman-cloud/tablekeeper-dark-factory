@@ -113,7 +113,10 @@ def absolute_seconds(instant):
 
 def duration_end(start, minutes, zone):
     if start.tzinfo is UTC:
-        return start + timedelta(minutes=minutes)
+        try:
+            return start + timedelta(minutes=minutes)
+        except OverflowError:
+            pass
     local = start.astimezone(zone)
     shift = 400 if local.year < 400 else -400
     shifted = local.replace(year=local.year + shift)
