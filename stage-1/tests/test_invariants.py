@@ -207,6 +207,18 @@ class Invariants(unittest.TestCase):
         self.assertEqual(self.call('POST', '/_test/import', exported, auth=False)[0], 204)
         self.assertEqual(self.call('POST', '/reservations', body, 'deep'), (200, receipt))
 
+    def test_early_calendar_years_preserve_four_digit_local_dates(self):
+        body = {**self.booking(), 'starts_at_local': '0001-01-15T19:00'}
+        status, receipt = self.call('POST', '/reservations', body, 'early-year')
+        self.assertEqual(status, 201)
+        self.assertEqual(receipt['starts_at_local'], body['starts_at_local'])
+        slots = self.call('GET', '/availability?restaurant_id=venue&date=0001-01-15&party_size=2', auth=False)[1]['slots']
+        self.assertTrue(slots)
+        self.assertTrue(all(slot['starts_at_local'].startswith('0001-01-15T') for slot in slots))
+        exported = self.call('GET', '/_test/export', auth=False)[1]
+        self.assertEqual(self.call('POST', '/_test/import', exported, auth=False)[0], 204)
+        self.assertEqual(self.call('POST', '/reservations', body, 'early-year'), (200, receipt))
+
 
 if __name__ == '__main__':
     unittest.main()

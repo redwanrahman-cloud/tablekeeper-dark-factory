@@ -256,7 +256,7 @@ def proposal(state, body, restaurant_id=None):
     if size > table['capacity']:
         fail(422, 'party_exceeds_capacity')
     return {'restaurant_id': rid, 'table_id': tid, 'party_size': size,
-            'starts_at_local': wall.strftime('%Y-%m-%dT%H:%M'),
+            'starts_at_local': wall.isoformat(timespec='minutes'),
             'starts_at': stamp(start, zone), 'ends_at': stamp(end, zone)}
 
 
@@ -458,7 +458,7 @@ def dispatch(method, path, query, body, headers):
                         for table in r['tables']:
                             if table['capacity'] >= size and not any(rec['status'] == 'confirmed' and overlaps({**slot, 'table_id': table['id']}, rec) for rec in state['reservations'].values()):
                                 available.append(table['id'])
-                        slots.append({'starts_at_local': wall.strftime('%Y-%m-%dT%H:%M'), 'starts_at': slot['starts_at'], 'available_table_ids': available})
+                        slots.append({'starts_at_local': wall.isoformat(timespec='minutes'), 'starts_at': slot['starts_at'], 'available_table_ids': available})
                 except ApiError as error:
                     if error.code != 'invalid_local_time':
                         raise
