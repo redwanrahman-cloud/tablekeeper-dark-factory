@@ -1,5 +1,4 @@
 """Stage 1 reservation API. No runtime dependencies beyond Python and IANA tzdata."""
-import copy
 import hashlib
 import hmac
 import json
@@ -118,25 +117,68 @@ STATE = empty_state()
 
 
 def same_json(a, b):
-    if isinstance(a, bool) or isinstance(b, bool):
-        return type(a) is type(b) and a == b
-    if isinstance(a, dict) and isinstance(b, dict):
-        return a.keys() == b.keys() and all(same_json(a[k], b[k]) for k in a)
-    if isinstance(a, list) and isinstance(b, list):
-        return len(a) == len(b) and all(same_json(x, y) for x, y in zip(a, b))
-    return a == b
+    pending = [(a, b)]
+    while pending:
+        left, right = pending.pop()
+        if isinstance(left, bool) or isinstance(right, bool):
+            if type(left) is not type(right) or left != right:
+                return False
+        elif isinstance(left, dict) and isinstance(right, dict):
+            if left.keys() != right.keys():
+                return False
+            pending.extend((left[k], right[k]) for k in left)
+        elif isinstance(left, list) and isinstance(right, list):
+            if len(left) != len(right):
+                return False
+            pending.extend(zip(left, right))
+        elif isinstance(left, (dict, list)) or isinstance(right, (dict, list)) or left != right:
+            return False
+    return True
+
+
+def json_copy(value):
+    """Copy parsed JSON without depending on Python's call-stack depth."""
+    if not isinstance(value, (dict, list)):
+        return value
+    result = {} if isinstance(value, dict) else []
+    pending = [(value, result)]
+    while pending:
+        source, target = pending.pop()
+        entries = source.items() if isinstance(source, dict) else enumerate(source)
+        for key, child in entries:
+            cloned = {} if isinstance(child, dict) else [] if isinstance(child, list) else child
+            if isinstance(target, dict):
+                target[key] = cloned
+            else:
+                target.append(cloned)
+            if isinstance(child, (dict, list)):
+                pending.append((child, cloned))
+    return result
 
 
 def json_text(value):
     """Preserve arbitrary JSON numbers in ignored fields and retry receipts."""
-    if isinstance(value, Decimal):
-        return str(value)
-    if isinstance(value, dict):
-        return '{' + ','.join(json.dumps(k, ensure_ascii=False) + ':' + json_text(v)
-                              for k, v in value.items()) + '}'
-    if isinstance(value, list):
-        return '[' + ','.join(json_text(v) for v in value) + ']'
-    return json.dumps(value, ensure_ascii=False, allow_nan=False)
+    output, pending = [], [(False, value)]
+    while pending:
+        literal, current = pending.pop()
+        if literal:
+            output.append(current)
+        elif isinstance(current, (dict, list)):
+            mapping = isinstance(current, dict)
+            output.append('{' if mapping else '[')
+            pending.append((True, '}' if mapping else ']'))
+            entries = list(current.items()) if mapping else list(enumerate(current))
+            for index in range(len(entries) - 1, -1, -1):
+                key, child = entries[index]
+                pending.append((False, child))
+                if mapping:
+                    pending.append((True, json.dumps(key, ensure_ascii=False) + ':'))
+                if index:
+                    pending.append((True, ','))
+        else:
+            output.append(str(current) if isinstance(current, Decimal) else
+                          json.dumps(current, ensure_ascii=False, allow_nan=False))
+    return ''.join(output)
 
 
 def validate_restaurant(raw):
@@ -349,7 +391,7 @@ def validate_import(body):
             keys.add(key)
     except (ApiError, KeyError, TypeError, ValueError, OverflowError):
         fail()
-    return copy.deepcopy(candidate)
+    return json_copy(candidate)
 
 
 def dispatch(method, path, query, body, headers):
@@ -361,7 +403,7 @@ def dispatch(method, path, query, body, headers):
         STATE = build_fixture(body)
         return 204, None
     if method == 'GET' and path == '/_test/export':
-        return 200, {'track': 'tablekeeper', 'format_version': 1, 'state': copy.deepcopy(state)}
+        return 200, {'track': 'tablekeeper', 'format_version': 1, 'state': json_copy(state)}
     if method == 'POST' and path == '/_test/import':
         STATE = validate_import(body)
         return 204, None
@@ -387,7 +429,7 @@ def dispatch(method, path, query, body, headers):
     if method == 'GET' and path == '/restaurants':
         return 200, {'restaurants': [{k: r[k] for k in ('id', 'name', 'timezone')} for r in state['restaurants'].values()]}
     if method == 'GET' and re.fullmatch(r'/restaurants/[^/]+', path):
-        return 200, copy.deepcopy(restaurant(state, path.split('/')[2]))
+        return 200, json_copy(restaurant(state, path.split('/')[2]))
     if method == 'GET' and path == '/availability':
         rid, day, size = (query.get(k, [''])[0] for k in ('restaurant_id', 'date', 'party_size'))
         if not rid or len(rid) > 64 or not re.fullmatch(r'\d{4}-\d{2}-\d{2}', day) or not re.fullmatch(r'[0-9]+', size):
@@ -442,7 +484,9 @@ def dispatch(method, path, query, body, headers):
             if all(receipt[k] == v for k, v in receipt_key.items()):
                 if not same_json(receipt['body'], body):
                     fail(409, 'idempotency_key_reuse')
-                return 200, copy.deepcopy(receipt['response'])
+                return 200, json_copy(receipt['response'])
+        # Prepare request-owned receipt data before a write can change occupancy.
+        receipt_body = json_copy(body)
     if method == 'POST' and path == '/reservations':
         record = proposal(state, body)
         check_occupancy(state, [record])
@@ -496,7 +540,7 @@ def dispatch(method, path, query, body, headers):
         fail(404, 'not_found')
     else:
         fail(404, 'not_found')
-    state['receipts'].append({**receipt_key, 'body': copy.deepcopy(body), 'response': copy.deepcopy(response)})
+    state['receipts'].append({**receipt_key, 'body': receipt_body, 'response': json_copy(response)})
     return 201, response
 
 

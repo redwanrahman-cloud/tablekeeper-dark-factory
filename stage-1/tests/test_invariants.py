@@ -194,6 +194,19 @@ class Invariants(unittest.TestCase):
         self.assertEqual(self.call('POST', '/_test/import', exported, auth=False)[0], 204)
         self.assertEqual(self.call('POST', '/reservations', body, 'large'), (200, receipt))
 
+    def test_deep_ignored_values_do_not_break_atomic_receipts(self):
+        body = self.booking()
+        body['ignored'] = 0
+        for _ in range(600):
+            body['ignored'] = [body['ignored']]
+        status, receipt = self.call('POST', '/reservations', body, 'deep')
+        self.assertEqual(status, 201)
+        self.assertEqual(self.call('POST', '/reservations', body, 'deep'), (200, receipt))
+        with urlopen(self.base + '/_test/export', timeout=5) as response:
+            exported = response.read()
+        self.assertEqual(self.call('POST', '/_test/import', exported, auth=False)[0], 204)
+        self.assertEqual(self.call('POST', '/reservations', body, 'deep'), (200, receipt))
+
 
 if __name__ == '__main__':
     unittest.main()
